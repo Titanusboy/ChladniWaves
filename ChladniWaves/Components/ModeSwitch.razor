@@ -1,0 +1,19 @@
+﻿@inject SceneStateService State
+@using ChladniWaves.Services
+
+<div class="mode-switch">
+    <button class="mode-btn @(State.Mode == VisualMode.Pillars ? "active" : "")"
+            @onclick="() => State.Mode = VisualMode.Pillars">
+        Столбики
+    </button>
+    <button class="mode-btn @(State.Mode == VisualMode.Sand ? "active" : "")"
+            @onclick="() => State.Mode = VisualMode.Sand">
+        Песок
+    </button>
+    @if (State.Mode == VisualMode.Sand)
+    {
+        <button class="mode-btn" @onclick="() => State.RequestScatter()">
+            Рассыпать
+        </button>
+    }
+</div>

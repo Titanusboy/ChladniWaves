@@ -1,0 +1,359 @@
+﻿@page "/"
+@inject IJSRuntime JS
+@inject SceneStateService State
+@implements IAsyncDisposable
+@using ChladniWaves.Models
+@using ChladniWaves.Services
+
+<div class="scene-container">
+    <canvas id="chladniCanvas"></canvas>
+    <InfoCard />
+    <CameraButtons />
+    <ControlPanel />
+    <PresetButtons />
+    <ModeSwitch />
+    <PaletteButtons />
+    <GraphsPanel />
+    <PhysicsModePanel />
+</div>
+
+@code {
+    private bool _updateInProgress = false;
+    private bool _pendingUpdate = false;
+    private IJSObjectReference? _module;
+    private IJSObjectReference? _graphsModule;
+    private DotNetObjectReference<Home>? _selfRef;
+    private PeriodicTimer? _timer;
+    private Task? _loopTask;
+    private float _time = 0f;
+    private readonly WavePhysicsService _physics = new();
+
+    // ─── Буферы для графиков ──────────────────────────────────
+    private readonly float[] _waveformBuffer = new float[120];
+    private float[] _crossSectionBuffer = new float[32];
+    private float[] _currentEnvelope = new float[1024];
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+
+        _selfRef = DotNetObjectReference.Create(this);
+        _module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/gravityScene.js");
+        await _module.InvokeVoidAsync("init", "chladniCanvas", _selfRef);
+
+        // Модуль графиков
+        _graphsModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/graphs.js");
+
+        RebuildWaves(new[] { 0f, 60f, 120f }, State.Wavelength, State.Amplitude, State.Speed);
+
+        _currentEnvelope = _physics.ComputeEnvelope();
+        await _module.InvokeVoidAsync("setEnvelope", _currentEnvelope);
+
+        // Буфер cross-section — размер под текущую сетку
+        _crossSectionBuffer = new float[_physics.GridSize];
+
+        State.Changed += HandleStateChanged;
+        State.PresetApplied += HandlePresetApplied;
+        State.ModeChanged += HandleModeChanged;
+        State.ScatterRequested += HandleScatter;
+        State.PaletteChanged += HandlePaletteChanged;
+        State.CameraModeChanged += HandleCameraMode;
+        State.ScreenshotRequested += HandleScreenshot;
+        State.PlateModeChanged += HandlePlateModeChanged;
+
+        await ApplyModeAsync(State.Mode);
+
+        _timer = new PeriodicTimer(TimeSpan.FromMilliseconds(16));
+        _loopTask = RunPhysicsLoop();
+    }
+
+    private void HandlePlateModeChanged(bool plateMode)
+    {
+        _ = ApplyPlateModeAsync();
+    }
+
+    private async Task ApplyPlateModeAsync()
+    {
+        if (_module == null) return;
+
+        float[] envelope;
+
+        if (State.PlateMode)
+        {
+            envelope = _physics.ComputePlateModeEnvelope(State.ModeM, State.ModeN);
+        }
+        else
+        {
+            envelope = _physics.ComputeEnvelope();
+        }
+
+        _currentEnvelope = envelope;
+
+        try
+        {
+            await _module.InvokeVoidAsync("setEnvelope", envelope);
+            await _module.InvokeVoidAsync("setMirrorForAmplitude", State.Amplitude);
+        }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+
+    private void RebuildWaves(float[] directionsDeg, float wavelength, float amplitude, float speed)
+    {
+        _physics.Waves.Clear();
+
+        foreach (var deg in directionsDeg)
+        {
+            float rad = deg * MathF.PI / 180f;
+
+            _physics.Waves.Add(new Wave
+            {
+                Amplitude = amplitude,
+                Wavelength = wavelength,
+                Angle = rad,
+                Speed = speed,
+                Phase = 0f
+            });
+
+            _physics.Waves.Add(new Wave
+            {
+                Amplitude = amplitude,
+                Wavelength = wavelength,
+                Angle = rad + MathF.PI,
+                Speed = speed,
+                Phase = 0f
+            });
+        }
+    }
+
+    private void HandleStateChanged()
+    {
+        _pendingUpdate = true;
+        _ = ProcessStateUpdatesAsync();
+    }
+
+    private async Task ProcessStateUpdatesAsync()
+    {
+        if (_updateInProgress) return;
+
+        _updateInProgress = true;
+        try
+        {
+            while (_pendingUpdate)
+            {
+                _pendingUpdate = false;
+                await ApplyStateAsync();
+            }
+        }
+        finally
+        {
+            _updateInProgress = false;
+        }
+    }
+
+    private void HandlePresetApplied(WavePreset preset)
+    {
+        RebuildWaves(preset.Directions, preset.Wavelength, preset.Amplitude, preset.Speed);
+        _ = ApplyStateAsync();
+    }
+
+    private void HandleModeChanged(VisualMode mode) => _ = ApplyModeAsync(mode);
+
+    private void HandleScatter() => _ = ScatterAsync();
+
+    private void HandlePaletteChanged(string name) => _ = InvokeAsync(async () =>
+    {
+        if (_module == null) return;
+        try { await _module.InvokeVoidAsync("setPalette", name); }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+    });
+
+    private void HandleCameraMode(string mode) => _ = InvokeAsync(async () =>
+    {
+        if (_module == null) return;
+        try { await _module.InvokeVoidAsync("setCameraMode", mode); }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+    });
+
+    private void HandleScreenshot() => _ = InvokeAsync(async () =>
+    {
+        if (_module == null) return;
+        try { await _module.InvokeVoidAsync("takeScreenshot"); }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+    });
+
+    private async Task ApplyModeAsync(VisualMode mode)
+    {
+        if (_module == null) return;
+        string modeStr = mode == VisualMode.Sand ? "sand" : "pillars";
+        try { await _module.InvokeVoidAsync("setMode", modeStr); }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    private async Task ScatterAsync()
+    {
+        if (_module == null) return;
+        try { await _module.InvokeVoidAsync("scatterSandJS"); }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    private async Task ApplyStateAsync()
+    {
+        if (_module == null) return;
+
+        // Обновляем параметры волн (пригодятся при возврате к wave mode)
+        foreach (var wave in _physics.Waves)
+        {
+            wave.Wavelength = State.Wavelength;
+            wave.Amplitude = State.Amplitude;
+            wave.Speed = State.Speed;
+        }
+
+        await _module.InvokeVoidAsync("setMirrorForAmplitude", State.Amplitude);
+
+        // Огибающая зависит от режима физики
+        float[] envelope;
+        if (State.PlateMode)
+        {
+            envelope = _physics.ComputePlateModeEnvelope(State.ModeM, State.ModeN);
+        }
+        else
+        {
+            envelope = _physics.ComputeEnvelope();
+        }
+
+        _currentEnvelope = envelope;
+
+        try { await _module.InvokeVoidAsync("setEnvelope", envelope); }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    [JSInvokable]
+    public void OnCanvasClick(int instanceId)
+    {
+        int gridSize = _physics.GridSize;
+        if (instanceId < 0 || instanceId >= gridSize * gridSize) return;
+
+        int i = instanceId / gridSize;
+        int j = instanceId % gridSize;
+        float offset = (gridSize - 1) * _physics.Spacing / 2f;
+
+        float x = i * _physics.Spacing - offset;
+        float z = j * _physics.Spacing - offset;
+
+        _physics.Impulses.Add(new Impulse
+        {
+            X = x,
+            Z = z,
+            StartTime = _time,
+            Amplitude = 1.2f,
+            Sigma = 10f,
+            Tau = 1.2f,
+            Speed = 8f,
+            Wavelength = 4f
+        });
+    }
+
+    private async Task RunPhysicsLoop()
+    {
+        if (_timer == null) return;
+
+        while (await _timer.WaitForNextTickAsync())
+        {
+            if (_module == null) return;
+
+            _time += 0.016f * State.TimeScale;
+            _physics.Impulses.RemoveAll(imp => _time - imp.StartTime > 4.0f);
+
+            float[] heights;
+            float modulation;
+
+            if (State.PlateMode)
+            {
+                heights = _physics.ComputePlateMode(_time, State.ModeM, State.ModeN);
+
+                // Модуляция должна совпадать с той, что в ComputePlateMode.
+                float speedScale = _physics.Waves.Count > 0 ? _physics.Waves[0].Speed / 2f : 1.0f;
+                if (speedScale <= 0.01f) speedScale = 0.01f;
+                float c = 6.0f * speedScale;
+                float L = (_physics.GridSize - 1) * _physics.Spacing;
+                float omega = c * MathF.PI * MathF.Sqrt(State.ModeM * State.ModeM + State.ModeN * State.ModeN) / L;
+                modulation = MathF.Cos(omega * _time);
+            }
+            else
+            {
+                heights = _physics.ComputeHeights(_time);
+                float omega = _physics.Waves.Count > 0 ? _physics.Waves[0].Omega : 1f;
+                modulation = MathF.Cos(omega * _time);
+            }
+
+            try { await _module.InvokeVoidAsync("updateHeights", heights, modulation); }
+            catch (JSDisconnectedException) { return; }
+            catch (ObjectDisposedException) { return; }
+
+            // ─── Обновляем буферы графиков ────────────────────
+            int gridSize = _physics.GridSize;
+            int centerIdx = (gridSize / 2) * gridSize + (gridSize / 2);
+
+            // Waveform — сдвиг истории + новое значение
+            Array.Copy(_waveformBuffer, 1, _waveformBuffer, 0, _waveformBuffer.Length - 1);
+            _waveformBuffer[_waveformBuffer.Length - 1] = heights[centerIdx];
+
+            // Cross-section — центральная строка огибающей
+            int row = gridSize / 2;
+            for (int j = 0; j < gridSize; j++)
+            {
+                _crossSectionBuffer[j] = _currentEnvelope[row * gridSize + j];
+            }
+
+            // Отправляем только если графики видны
+            if (State.ShowGraphs && _graphsModule != null)
+            {
+                try
+                {
+                    if (State.ShowWaveform)
+                        await _graphsModule.InvokeVoidAsync("pushWaveform", _waveformBuffer);
+                    if (State.ShowCrossSection)
+                        await _graphsModule.InvokeVoidAsync("pushCrossSection", _crossSectionBuffer);
+                }
+                catch (JSDisconnectedException) { return; }
+                catch (ObjectDisposedException) { return; }
+            }
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        State.Changed -= HandleStateChanged;
+        State.PresetApplied -= HandlePresetApplied;
+        State.ModeChanged -= HandleModeChanged;
+        State.ScatterRequested -= HandleScatter;
+        State.PaletteChanged -= HandlePaletteChanged;
+        State.CameraModeChanged -= HandleCameraMode;
+        State.ScreenshotRequested -= HandleScreenshot;
+        State.PlateModeChanged -= HandlePlateModeChanged;
+
+        _timer?.Dispose();
+        if (_loopTask != null) { try { await _loopTask; } catch { } }
+
+        if (_module != null)
+        {
+            try { await _module.InvokeVoidAsync("dispose"); } catch { }
+            await _module.DisposeAsync();
+        }
+
+        if (_graphsModule != null)
+        {
+            await _graphsModule.DisposeAsync();
+        }
+
+        _selfRef?.Dispose();
+    }
+}

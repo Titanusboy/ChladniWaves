@@ -1,0 +1,65 @@
+﻿@inject SceneStateService State
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+<div class="graphs-panel">
+    <label class="graphs-toggle">
+        <input type="checkbox" @bind="State.ShowGraphs" />
+        <span>Показать графики</span>
+    </label>
+
+    @if (State.ShowGraphs)
+    {
+        <div class="graphs-content">
+            <div class="graph-block">
+                <div class="graph-label">
+                    <label>
+                        <input type="checkbox" @bind="State.ShowWaveform" />
+                        WAVEFORM · z(t)
+                    </label>
+                </div>
+                <canvas id="waveformCanvas" class="graph-canvas @(State.ShowWaveform ? "" : "hidden")"></canvas>
+            </div>
+
+            <div class="graph-block">
+                <div class="graph-label">
+                    <label>
+                        <input type="checkbox" @bind="State.ShowCrossSection" />
+                        CROSS-SECTION · E(x)
+                    </label>
+                </div>
+                <canvas id="crossCanvas" class="graph-canvas @(State.ShowCrossSection ? "" : "hidden")"></canvas>
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    private IJSObjectReference? _module;
+    private bool _initialized = false;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Если графики показаны, но модуль ещё не инициализирован — самое время.
+        if (State.ShowGraphs && !_initialized)
+        {
+            _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/graphs.js");
+            await _module.InvokeVoidAsync("initGraphs", "waveformCanvas", "crossCanvas", 360, 70);
+            _initialized = true;
+        }
+        else if (!State.ShowGraphs)
+        {
+            // Пользователь скрыл панель — при следующем показе нужно
+            // переинициализировать, потому что canvas'ы будут новые.
+            _initialized = false;
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_module != null)
+        {
+            await _module.DisposeAsync();
+        }
+    }
+}

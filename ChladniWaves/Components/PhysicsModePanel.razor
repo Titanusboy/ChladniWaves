@@ -1,0 +1,58 @@
+﻿@inject SceneStateService State
+@using System.Globalization
+
+<div class="physics-mode-panel">
+    <h3>Режим физики</h3>
+
+    <div class="mode-toggle">
+        <button class="phys-btn @(!State.PlateMode ? "active" : "")"
+                @onclick="() => State.PlateMode = false">
+            Плоские волны
+        </button>
+        <button class="phys-btn @(State.PlateMode ? "active" : "")"
+                @onclick="() => State.PlateMode = true">
+            Моды пластины
+        </button>
+    </div>
+
+    @if (State.PlateMode)
+    {
+        <div class="mode-controls">
+            <div class="slider-group">
+                <div class="slider-label">
+                    <span>Мода m</span>
+                    <span class="value">@State.ModeM</span>
+                </div>
+                <input type="range" min="1" max="6" step="1"
+                       value="@State.ModeM"
+                       @oninput="e => State.ModeM = ParseInt(e)" />
+            </div>
+
+            <div class="slider-group">
+                <div class="slider-label">
+                    <span>Мода n</span>
+                    <span class="value">@State.ModeN</span>
+                </div>
+                <input type="range" min="1" max="6" step="1"
+                       value="@State.ModeN"
+                       @oninput="e => State.ModeN = ParseInt(e)" />
+            </div>
+
+            <div class="mode-frequency">
+                <span>ω<sub>mn</sub> ≈</span>
+                <span class="value">@State.ModeFrequency.ToString("F2", CultureInfo.InvariantCulture)</span>
+            </div>
+            <div class="mode-hint">
+                z = sin(mπx/L) · sin(nπy/L) · cos(ω<sub>mn</sub>t)
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    private int ParseInt(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out var v)) return v;
+        return 1;
+    }
+}

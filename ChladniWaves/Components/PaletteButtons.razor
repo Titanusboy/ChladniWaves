@@ -1,0 +1,11 @@
+﻿@inject SceneStateService State
+
+<div class="palette-switch">
+    @foreach (var name in new[] { "neon", "sunset", "ocean", "mono" })
+    {
+        <button class="palette-btn @(State.PaletteName == name ? "active" : "")"
+                @onclick='() => State.PaletteName = name'>
+            @name
+        </button>
+    }
+</div>

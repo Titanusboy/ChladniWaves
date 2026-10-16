@@ -1,0 +1,11 @@
+﻿@inject SceneStateService State
+@using ChladniWaves.Models
+
+<div class="preset-buttons">
+    @foreach (var preset in WavePreset.All)
+    {
+        <button class="preset-btn" @onclick="() => State.ApplyPreset(preset)">
+            @preset.Name
+        </button>
+    }
+</div>
